@@ -1,0 +1,9 @@
+(library
+ (name messenger_core)
+ (public_name messenger-core)
+ (modules
+  platform_types
+  error_types
+  http_client
+  connector_intf
+  messenger_core))
