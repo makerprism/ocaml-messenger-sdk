@@ -1,0 +1,4 @@
+(test
+ (name test_smoke)
+ (modules test_smoke)
+ (libraries messenger-core))

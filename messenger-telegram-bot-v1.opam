@@ -6,12 +6,13 @@ description:
 maintainer: ["sabine@makerprism.com"]
 authors: ["Sabine Schmaltz"]
 license: "MIT"
-homepage: "https://github.com/makerprism-bot/ocaml-messenger-sdk"
-doc: "https://github.com/makerprism-bot/ocaml-messenger-sdk"
-bug-reports: "https://github.com/makerprism-bot/ocaml-messenger-sdk/issues"
+homepage: "https://github.com/makerprism/ocaml-messenger-sdk"
+doc: "https://github.com/makerprism/ocaml-messenger-sdk"
+bug-reports: "https://github.com/makerprism/ocaml-messenger-sdk/issues"
 depends: [
   "dune" {>= "3.16"}
   "ocaml" {>= "4.14"}
+  "messenger-core" {= version}
   "yojson"
   "uri"
   "str"
@@ -31,4 +32,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/makerprism-bot/ocaml-messenger-sdk.git"
+dev-repo: "git+https://github.com/makerprism/ocaml-messenger-sdk.git"

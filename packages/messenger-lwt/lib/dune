@@ -1,0 +1,5 @@
+(library
+ (name messenger_lwt)
+ (public_name messenger-lwt)
+ (libraries messenger_core lwt)
+ (modules lwt_adapter messenger_lwt))
