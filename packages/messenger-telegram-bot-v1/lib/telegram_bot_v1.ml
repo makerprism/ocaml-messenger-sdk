@@ -25,6 +25,15 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
     let json_opt =
       try Some (Yojson.Basic.from_string body) with _ -> None
     in
+    let error_code_opt =
+      match json_opt with
+      | Some json ->
+          (try
+             let open Yojson.Basic.Util in
+             Some (json |> member "error_code" |> to_int)
+           with _ -> None)
+      | None -> None
+    in
     let message =
       match json_opt with
       | Some json ->
@@ -46,6 +55,10 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
     if status = 429 then
       Error_types.Rate_limited
         { retry_after_seconds; limit = None; remaining = Some 0 }
+    else if status = 401 || error_code_opt = Some 401 then
+      Error_types.Auth_error Error_types.Invalid_token
+    else if status = 403 || error_code_opt = Some 403 then
+      Error_types.Auth_error (Error_types.Unauthorized message)
     else
       let retriable = status >= 500 in
       Error_types.Api_error { code = status; message; retriable }
@@ -123,12 +136,13 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
       | post :: rest ->
           send_message ~account_id post (function
             | Ok id -> loop (index + 1) (id :: acc) rest
-            | Error err ->
-                let detail =
-                  "Thread send failed at index " ^ string_of_int index ^ ": "
-                  ^ Error_types.to_string err
-                in
-                on_result (Error (Error_types.Internal_error detail)))
+            | Error _ ->
+                on_result
+                  (Ok
+                     { Platform_types.posted_ids = List.rev acc
+                     ; failed_at_index = Some index
+                     ; total_requested
+                     }))
     in
     loop 0 [] thread.Platform_types.posts
 
@@ -139,7 +153,13 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
           (telegram_url ~token "getMe")
           (fun resp ->
             if resp.status >= 200 && resp.status < 300 then
-              on_result (Ok ())
+              (try
+                 let json = Yojson.Basic.from_string resp.body in
+                 let open Yojson.Basic.Util in
+                 let ok = try json |> member "ok" |> to_bool with _ -> false in
+                 if ok then on_result (Ok ())
+                 else on_result (Error (parse_api_error resp.status resp.body))
+               with _ -> on_result (Error (Error_types.Internal_error "Failed to parse Telegram getMe response")))
             else
               on_result (Error (parse_api_error resp.status resp.body)))
           (fun err_msg ->
