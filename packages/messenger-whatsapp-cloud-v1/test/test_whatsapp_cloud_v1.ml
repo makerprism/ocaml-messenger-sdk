@@ -81,6 +81,25 @@ let expect_header headers key expected =
   | Some value -> fail ("expected header " ^ key ^ "=" ^ expected ^ ", got " ^ value)
   | None -> fail ("missing header " ^ key)
 
+let expect_media_payload ?caption ~media_type ~media_field ~link () =
+  match !(Mock_http.last_post_body) with
+  | None -> fail "expected request body"
+  | Some body ->
+      let json = Yojson.Basic.from_string body in
+      let open Yojson.Basic.Util in
+      if json |> member "type" |> to_string <> media_type then
+        fail ("expected payload type=" ^ media_type);
+      if json |> member media_field |> member "link" |> to_string <> link then
+        fail ("expected payload " ^ media_field ^ ".link=" ^ link);
+      (match caption with
+       | None ->
+           (match json |> member media_field |> member "caption" with
+            | `Null -> ()
+            | _ -> fail "expected media caption to be omitted")
+       | Some expected_caption ->
+           if json |> member media_field |> member "caption" |> to_string <> expected_caption then
+             fail ("expected media caption=" ^ expected_caption))
+
 let test_send_message_text_success () =
   Mock_http.reset ();
   Mock_http.post_responses :=
@@ -117,17 +136,117 @@ let test_send_message_text_success () =
       if json |> member "text" |> member "body" |> to_string <> "hello" then
         fail "expected payload text.body=hello"
 
-let test_send_message_media_unsupported () =
+let test_send_message_media_image_payload () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{\"messages\":[{\"id\":\"wamid.image\"}]}"
+        }
+    ];
+  let media_url = "https://example.invalid/photo.JPEG?download=1" in
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message ~text:"see photo" ~media_urls:[ media_url ] (Phone_number "15551234567"))
+    (function
+      | Ok "wamid.image" -> ()
+      | Ok value -> fail ("expected message id wamid.image, got " ^ value)
+      | Error err -> fail ("expected success, got " ^ Error_types.to_string err));
+  expect_media_payload
+    ~media_type:"image"
+    ~media_field:"image"
+    ~link:media_url
+    ~caption:"see photo"
+    ()
+
+let test_send_message_media_video_payload_without_caption () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{\"messages\":[{\"id\":\"wamid.video\"}]}"
+        }
+    ];
+  let media_url = "https://example.invalid/clip.mp4" in
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message ~text:"" ~media_urls:[ media_url ] (Phone_number "15551234567"))
+    (function
+      | Ok "wamid.video" -> ()
+      | Ok value -> fail ("expected message id wamid.video, got " ^ value)
+      | Error err -> fail ("expected success, got " ^ Error_types.to_string err));
+  expect_media_payload ~media_type:"video" ~media_field:"video" ~link:media_url ()
+
+let test_send_message_media_document_payload () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{\"messages\":[{\"id\":\"wamid.doc\"}]}"
+        }
+    ];
+  let media_url = "https://example.invalid/report.PDF#page=2" in
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message ~text:"monthly report" ~media_urls:[ media_url ] (Phone_number "15551234567"))
+    (function
+      | Ok "wamid.doc" -> ()
+      | Ok value -> fail ("expected message id wamid.doc, got " ^ value)
+      | Error err -> fail ("expected success, got " ^ Error_types.to_string err));
+  expect_media_payload
+    ~media_type:"document"
+    ~media_field:"document"
+    ~link:media_url
+    ~caption:"monthly report"
+    ()
+
+let test_send_message_media_multiple_urls_unsupported () =
   Mock_http.reset ();
   Connector.send_message
     ~account_id:"acct"
-    (sample_message ~media_urls:[ "https://example.invalid/file.png" ] (Phone_number "15551234567"))
+    (sample_message
+       ~media_urls:[ "https://example.invalid/one.png"; "https://example.invalid/two.png" ]
+       (Phone_number "15551234567"))
     (function
       | Ok _ -> fail "expected validation error"
       | Error (Error_types.Validation_error errors) ->
-          if not (List.exists (fun err -> err.Error_types.field = "media_urls") errors) then
-            fail "expected media_urls validation error"
-      | Error err -> fail ("expected Validation_error, got " ^ Error_types.to_string err))
+          if
+            not
+              (List.exists
+                 (fun err ->
+                   err.Error_types.field = "media_urls"
+                   && err.message = "only one media URL is supported in MVP")
+                 errors)
+          then
+            fail "expected clear multi-media validation error"
+      | Error err -> fail ("expected Validation_error, got " ^ Error_types.to_string err));
+  if !(Mock_http.post_calls) <> 0 then
+    fail "send_message should not call HTTP when multiple media URLs are provided"
+
+let test_send_message_media_unknown_extension_unsupported () =
+  Mock_http.reset ();
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message ~media_urls:[ "https://example.invalid/archive.bin" ] (Phone_number "15551234567"))
+    (function
+      | Ok _ -> fail "expected validation error"
+      | Error (Error_types.Validation_error errors) ->
+          if
+            not
+              (List.exists
+                 (fun err ->
+                   err.Error_types.field = "media_urls"
+                   && err.message
+                        = "unable to infer media type from URL extension (supported: image, video, document)")
+                 errors)
+          then
+            fail "expected unsupported extension validation error"
+      | Error err -> fail ("expected Validation_error, got " ^ Error_types.to_string err));
+  if !(Mock_http.post_calls) <> 0 then
+    fail "send_message should not call HTTP when media type cannot be inferred"
 
 let test_validate_access_success () =
   Mock_http.reset ();
@@ -257,7 +376,11 @@ let test_missing_token_error () =
 
 let () =
   test_send_message_text_success ();
-  test_send_message_media_unsupported ();
+  test_send_message_media_image_payload ();
+  test_send_message_media_video_payload_without_caption ();
+  test_send_message_media_document_payload ();
+  test_send_message_media_multiple_urls_unsupported ();
+  test_send_message_media_unknown_extension_unsupported ();
   test_validate_access_success ();
   test_validate_access_invalid_token ();
   test_send_message_api_error_payload_200 ();

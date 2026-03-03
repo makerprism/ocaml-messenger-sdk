@@ -121,55 +121,132 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
       | [] -> None
     with _ -> None
 
+  type media_kind =
+    | Image
+    | Video
+    | Document
+
+  let media_type_and_field = function
+    | Image -> ("image", "image")
+    | Video -> ("video", "video")
+    | Document -> ("document", "document")
+
+  let last_index_of_opt input target =
+    let rec loop index =
+      if index < 0 then None
+      else if input.[index] = target then Some index
+      else loop (index - 1)
+    in
+    loop (String.length input - 1)
+
+  let strip_url_query_and_fragment url =
+    let length = String.length url in
+    let rec find_cutoff index =
+      if index >= length then length
+      else
+        match url.[index] with
+        | '?' | '#' -> index
+        | _ -> find_cutoff (index + 1)
+    in
+    String.sub url 0 (find_cutoff 0)
+
+  let infer_media_kind_from_url url =
+    let cleaned_url = String.trim url |> strip_url_query_and_fragment in
+    match last_index_of_opt cleaned_url '.' with
+    | None -> None
+    | Some dot_index ->
+        let slash_index = Option.value (last_index_of_opt cleaned_url '/') ~default:(-1) in
+        if dot_index <= slash_index || dot_index = String.length cleaned_url - 1 then
+          None
+        else
+          let extension =
+            String.sub cleaned_url (dot_index + 1) (String.length cleaned_url - dot_index - 1)
+            |> String.lowercase_ascii
+          in
+          match extension with
+          | "jpg" | "jpeg" | "png" | "webp" | "gif" -> Some Image
+          | "mp4" | "3gp" | "mov" -> Some Video
+          | "pdf" | "doc" | "docx" | "ppt" | "pptx" | "xls" | "xlsx" | "txt"
+          | "csv" | "rtf" -> Some Document
+          | _ -> None
+
+  let build_message_payload message =
+    let base_fields =
+      [ ("messaging_product", `String "whatsapp")
+      ; ("to", `String (recipient_to_phone message.Platform_types.recipient))
+      ]
+    in
+    match message.Platform_types.media_urls with
+    | [] ->
+        Ok
+          (`Assoc
+             (base_fields
+             @ [ ("type", `String "text")
+               ; ("text", `Assoc [ ("preview_url", `Bool false); ("body", `String message.text) ])
+               ]))
+    | [ media_url ] ->
+        (match infer_media_kind_from_url media_url with
+         | None ->
+             Error
+               [ { Error_types.field = "media_urls"
+                 ; message =
+                     "unable to infer media type from URL extension (supported: image, video, document)"
+                 }
+               ]
+         | Some media_kind ->
+             let message_type, media_field = media_type_and_field media_kind in
+             let media_payload =
+               if String.trim message.text = "" then
+                 `Assoc [ ("link", `String media_url) ]
+               else
+                 `Assoc [ ("link", `String media_url); ("caption", `String message.text) ]
+             in
+             Ok (`Assoc (base_fields @ [ ("type", `String message_type); (media_field, media_payload) ])))
+    | _ ->
+        Error
+          [ { Error_types.field = "media_urls"
+            ; message = "only one media URL is supported in MVP"
+            }
+          ]
+
   let send_message ~account_id message on_result =
     match Connector_intf.validate_outbound_message message with
     | Error errors -> on_result (Error (Error_types.Validation_error errors))
-    | Ok () when message.Platform_types.media_urls <> [] ->
-        on_result
-          (Error
-             (Error_types.Validation_error
-                [ { field = "media_urls"; message = "media messages are not supported in MVP" }
-                ]))
     | Ok () ->
-        with_token ~account_id
-          (fun token ->
-            let payload =
-              `Assoc
-                [ ("messaging_product", `String "whatsapp")
-                ; ("to", `String (recipient_to_phone message.recipient))
-                ; ("type", `String "text")
-                ; ("text", `Assoc [ ("preview_url", `Bool false); ("body", `String message.text) ])
-                ]
-            in
-            Config.Http.post
-              ~headers:
-                [ ("Authorization", "Bearer " ^ token)
-                ; ("Content-Type", "application/json")
-                ]
-              ~body:(Yojson.Basic.to_string payload)
-              (messages_url ~account_id)
-              (fun response ->
-                if response.status >= 200 && response.status < 300 then
-                  if has_api_error_payload response.body then
-                    on_result
-                      (Error
-                         (parse_api_error response.status response.headers response.body))
-                  else
-                    (match parse_message_id response.body with
-                     | Some message_id -> on_result (Ok message_id)
-                     | None ->
+        (match build_message_payload message with
+         | Error errors -> on_result (Error (Error_types.Validation_error errors))
+         | Ok payload ->
+             with_token ~account_id
+               (fun token ->
+                 Config.Http.post
+                   ~headers:
+                     [ ("Authorization", "Bearer " ^ token)
+                     ; ("Content-Type", "application/json")
+                     ]
+                   ~body:(Yojson.Basic.to_string payload)
+                   (messages_url ~account_id)
+                   (fun response ->
+                     if response.status >= 200 && response.status < 300 then
+                       if has_api_error_payload response.body then
                          on_result
                            (Error
-                              (Error_types.Internal_error
-                                 "WhatsApp Cloud API response missing messages[0].id")))
-                else
-                  on_result
-                    (Error
-                       (parse_api_error response.status response.headers response.body)))
-              (fun err_msg ->
-                on_result
-                  (Error Error_types.(Network_error (Connection_failed err_msg)))))
-          (fun err -> on_result (Error err))
+                              (parse_api_error response.status response.headers response.body))
+                       else
+                         (match parse_message_id response.body with
+                          | Some message_id -> on_result (Ok message_id)
+                          | None ->
+                              on_result
+                                (Error
+                                   (Error_types.Internal_error
+                                      "WhatsApp Cloud API response missing messages[0].id")))
+                     else
+                       on_result
+                         (Error
+                            (parse_api_error response.status response.headers response.body)))
+                   (fun err_msg ->
+                     on_result
+                       (Error Error_types.(Network_error (Connection_failed err_msg)))))
+               (fun err -> on_result (Error err)))
 
   let send_thread ~account_id thread on_result =
     let total_requested = List.length thread.Platform_types.posts in
