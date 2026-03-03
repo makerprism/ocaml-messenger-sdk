@@ -316,8 +316,65 @@ let test_send_message_payload_rate_limit_with_retry_after () =
             { retry_after_seconds = Some 7; limit = None; remaining = None }) ->
           ()
       | Error err ->
+           fail
+             ("expected Rate_limited with retry_after_seconds=Some 7, got "
+            ^ Error_types.to_string err))
+
+let test_send_message_payload_rate_limit_retry_after_header () =
+  reset_env ();
+  Mock_http.next_post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = [ ("Retry-After", "19") ]
+        ; body = "{\"ok\":false,\"error\":\"rate limit\",\"code\":429}"
+        }
+    ];
+  Connector.send_message ~account_id:"+12025550000" (sample_message "hello")
+    (function
+      | Ok _ -> fail "expected rate limit mapping"
+      | Error
+          (Error_types.Rate_limited
+            { retry_after_seconds = Some 19; limit = None; remaining = None }) ->
+          ()
+      | Error err ->
           fail
-            ("expected Rate_limited with retry_after_seconds=Some 7, got "
+            ("expected Rate_limited with retry_after_seconds=Some 19, got "
+           ^ Error_types.to_string err))
+
+let test_send_message_invalid_json_success_body () =
+  reset_env ();
+  Mock_http.next_post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{not-json"
+        }
+    ];
+  Connector.send_message ~account_id:"+12025550000" (sample_message "hello")
+    (function
+      | Ok _ -> fail "expected internal error for malformed response"
+      | Error (Error_types.Internal_error _) -> ()
+      | Error err ->
+          fail
+            ("expected Internal_error for malformed response, got "
+           ^ Error_types.to_string err))
+
+let test_send_message_success_missing_identifier () =
+  reset_env ();
+  Mock_http.next_post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{\"ok\":true,\"result\":{}}"
+        }
+    ];
+  Connector.send_message ~account_id:"+12025550000" (sample_message "hello")
+    (function
+      | Ok _ -> fail "expected internal error for missing message identifier"
+      | Error (Error_types.Internal_error _) -> ()
+      | Error err ->
+          fail
+            ("expected Internal_error for missing message identifier, got "
            ^ Error_types.to_string err))
 
 let test_validate_access_payload_auth_mapping () =
@@ -368,5 +425,8 @@ let () =
   test_send_message_payload_error_on_http_2xx ();
   test_send_message_payload_auth_mapping ();
   test_send_message_payload_rate_limit_with_retry_after ();
+  test_send_message_payload_rate_limit_retry_after_header ();
+  test_send_message_invalid_json_success_body ();
+  test_send_message_success_missing_identifier ();
   test_validate_access_payload_auth_mapping ();
   test_validate_access_payload_rate_limit_retry_after_header ()
