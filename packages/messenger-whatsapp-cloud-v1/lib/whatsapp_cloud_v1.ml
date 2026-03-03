@@ -171,19 +171,37 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
           | _ -> None
 
   let build_message_payload message =
+    let metadata_value key =
+      message.Platform_types.metadata
+      |> List.find_map (fun (k, v) ->
+             if String.lowercase_ascii k = key then Some (String.trim v) else None)
+    in
     let base_fields =
       [ ("messaging_product", `String "whatsapp")
       ; ("to", `String (recipient_to_phone message.Platform_types.recipient))
       ]
     in
+    let base_fields =
+      match metadata_value "biz_opaque_callback_data" with
+      | Some value when value <> "" ->
+          base_fields @ [ ("biz_opaque_callback_data", `String value) ]
+      | _ -> base_fields
+    in
+    let context_fields =
+      match metadata_value "context_message_id" with
+      | Some value when value <> "" ->
+          [ ("context", `Assoc [ ("message_id", `String value) ]) ]
+      | _ -> []
+    in
     match message.Platform_types.media_urls with
     | [] ->
         Ok
           (`Assoc
-             (base_fields
-             @ [ ("type", `String "text")
-               ; ("text", `Assoc [ ("preview_url", `Bool false); ("body", `String message.text) ])
-               ]))
+              (base_fields
+              @ context_fields
+              @ [ ("type", `String "text")
+                ; ("text", `Assoc [ ("preview_url", `Bool false); ("body", `String message.text) ])
+                ]))
     | [ media_url ] ->
         (match infer_media_kind_from_url media_url with
          | None ->
@@ -195,13 +213,16 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
                ]
          | Some media_kind ->
              let message_type, media_field = media_type_and_field media_kind in
-             let media_payload =
-               if String.trim message.text = "" then
-                 `Assoc [ ("link", `String media_url) ]
-               else
-                 `Assoc [ ("link", `String media_url); ("caption", `String message.text) ]
-             in
-             Ok (`Assoc (base_fields @ [ ("type", `String message_type); (media_field, media_payload) ])))
+              let media_payload =
+                if String.trim message.text = "" then
+                  `Assoc [ ("link", `String media_url) ]
+                else
+                  `Assoc [ ("link", `String media_url); ("caption", `String message.text) ]
+              in
+              Ok
+                (`Assoc
+                   (base_fields @ context_fields
+                  @ [ ("type", `String message_type); (media_field, media_payload) ])))
     | _ ->
         Error
           [ { Error_types.field = "media_urls"

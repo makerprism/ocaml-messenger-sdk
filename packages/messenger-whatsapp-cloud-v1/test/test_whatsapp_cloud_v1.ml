@@ -136,6 +136,36 @@ let test_send_message_text_success () =
       if json |> member "text" |> member "body" |> to_string <> "hello" then
         fail "expected payload text.body=hello"
 
+let test_send_message_includes_context_and_tracker_metadata () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{\"messages\":[{\"id\":\"wamid.meta\"}]}"
+        }
+    ];
+  let message =
+    { Platform_types.recipient = Phone_number "15551234567"
+    ; text = "hello"
+    ; media_urls = []
+    ; metadata = [ ("context_message_id", "wamid.origin"); ("biz_opaque_callback_data", "trace-123") ]
+    }
+  in
+  Connector.send_message ~account_id:"acct" message (function
+    | Ok "wamid.meta" -> ()
+    | Ok value -> fail ("expected message id wamid.meta, got " ^ value)
+    | Error err -> fail ("expected success, got " ^ Error_types.to_string err));
+  match !(Mock_http.last_post_body) with
+  | None -> fail "expected request body"
+  | Some body ->
+      let json = Yojson.Basic.from_string body in
+      let open Yojson.Basic.Util in
+      if json |> member "context" |> member "message_id" |> to_string <> "wamid.origin" then
+        fail "expected payload context.message_id=wamid.origin";
+      if json |> member "biz_opaque_callback_data" |> to_string <> "trace-123" then
+        fail "expected payload biz_opaque_callback_data=trace-123"
+
 let test_send_message_media_image_payload () =
   Mock_http.reset ();
   Mock_http.post_responses :=
@@ -444,6 +474,7 @@ let test_missing_token_error () =
 
 let () =
   test_send_message_text_success ();
+  test_send_message_includes_context_and_tracker_metadata ();
   test_send_message_media_image_payload ();
   test_send_message_media_video_payload_without_caption ();
   test_send_message_media_document_payload ();
