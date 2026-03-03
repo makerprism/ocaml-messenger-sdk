@@ -175,6 +175,26 @@ let test_send_message_media_type_unsupported () =
   if !(Mock_http.post_call_count) <> 0 then
     fail "send_message should not call HTTP for unsupported media URLs"
 
+(* Ported behavior intent: media validation and malformed/error payload handling
+   aligned with mature Telegram SDK suites (e.g. aiogram/node-telegram-bot-api). *)
+let test_send_message_multiple_media_urls_unsupported () =
+  Mock_http.reset ();
+  let message =
+    { Platform_types.recipient = Channel_id "-100123"
+    ; text = "hello"
+    ; media_urls = [ "https://example.test/a.jpg"; "https://example.test/b.jpg" ]
+    ; metadata = []
+    }
+  in
+  Connector.send_message ~account_id:"acct" message (function
+    | Ok _ -> fail "expected validation error for multiple media URLs"
+    | Error (Error_types.Validation_error errors) ->
+        if not (List.exists (fun err -> err.Error_types.field = "media_urls") errors) then
+          fail "expected media_urls validation error"
+    | Error err -> fail ("expected validation error, got " ^ Error_types.to_string err));
+  if !(Mock_http.post_call_count) <> 0 then
+    fail "send_message should not call HTTP for multiple media URLs"
+
 let test_validate_access_success () =
   Mock_http.reset ();
   Mock_http.next_get_response := Ok { Http_client.status = 200; headers = []; body = "{\"ok\":true}" };
@@ -201,6 +221,46 @@ let test_send_message_api_error_payload () =
     | Ok _ -> fail "expected API error"
     | Error (Error_types.Api_error { code; _ }) when code = 400 -> ()
     | Error err -> fail ("expected Api_error, got " ^ Error_types.to_string err))
+
+let test_send_message_invalid_json_response () =
+  Mock_http.reset ();
+  Mock_http.next_post_response :=
+    Ok
+      { Http_client.status = 200
+      ; headers = []
+      ; body = "{not-json"
+      };
+  let message =
+    { Platform_types.recipient = Channel_id "-100123"
+    ; text = "hello"
+    ; media_urls = []
+    ; metadata = []
+    }
+  in
+  Connector.send_message ~account_id:"acct" message (function
+    | Ok _ -> fail "expected parse/internal error"
+    | Error (Error_types.Internal_error _) -> ()
+    | Error err -> fail ("expected Internal_error, got " ^ Error_types.to_string err))
+
+let test_send_message_success_missing_message_id () =
+  Mock_http.reset ();
+  Mock_http.next_post_response :=
+    Ok
+      { Http_client.status = 200
+      ; headers = []
+      ; body = "{\"ok\":true,\"result\":{}}"
+      };
+  let message =
+    { Platform_types.recipient = Channel_id "-100123"
+    ; text = "hello"
+    ; media_urls = []
+    ; metadata = []
+    }
+  in
+  Connector.send_message ~account_id:"acct" message (function
+    | Ok _ -> fail "expected internal error for missing message_id"
+    | Error (Error_types.Internal_error _) -> ()
+    | Error err -> fail ("expected Internal_error, got " ^ Error_types.to_string err))
 
 let test_send_message_rate_limited_payload () =
   Mock_http.reset ();
@@ -256,6 +316,19 @@ let test_validate_access_api_payload_error () =
     | Error (Error_types.Auth_error Error_types.Invalid_token) -> ()
     | Error err -> fail ("expected Invalid_token, got " ^ Error_types.to_string err))
 
+let test_validate_access_invalid_json_response () =
+  Mock_http.reset ();
+  Mock_http.next_get_response :=
+    Ok
+      { Http_client.status = 200
+      ; headers = []
+      ; body = "{invalid-json"
+      };
+  Connector.validate_access ~account_id:"acct" (function
+    | Ok () -> fail "expected parse/internal error"
+    | Error (Error_types.Internal_error _) -> ()
+    | Error err -> fail ("expected Internal_error, got " ^ Error_types.to_string err))
+
 let test_send_thread_partial_result () =
   Mock_http.reset ();
   Mock_http.queued_post_responses :=
@@ -283,9 +356,13 @@ let () =
   test_send_message_video_success_without_caption ();
   test_send_message_validation_error ();
   test_send_message_media_type_unsupported ();
+  test_send_message_multiple_media_urls_unsupported ();
   test_validate_access_success ();
   test_send_message_api_error_payload ();
+  test_send_message_invalid_json_response ();
+  test_send_message_success_missing_message_id ();
   test_send_message_rate_limited_payload ();
   test_send_message_auth_error_payload ();
   test_validate_access_api_payload_error ();
+  test_validate_access_invalid_json_response ();
   test_send_thread_partial_result ()
