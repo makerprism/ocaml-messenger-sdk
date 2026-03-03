@@ -294,6 +294,9 @@ let test_send_message_api_error_payload_200 () =
           if message <> "(#100) Invalid parameter" then fail "unexpected API error message"
        | Error err -> fail ("expected Api_error, got " ^ Error_types.to_string err))
 
+(* Ported behavior intent: Cloud API error handling patterns inspired by
+   netflie/bindambc/secreto reference suites (2xx error objects, retry-after,
+   malformed success payloads). *)
 let test_send_message_rate_limited_retry_after_header () =
   Mock_http.reset ();
   Mock_http.post_responses :=

@@ -320,6 +320,8 @@ let test_send_message_payload_rate_limit_with_retry_after () =
              ("expected Rate_limited with retry_after_seconds=Some 7, got "
             ^ Error_types.to_string err))
 
+(* Ported behavior intent: bridge error-envelope/malformed-success checks aligned
+   with openclaw + signal-cli-rest-api behavior expectations. *)
 let test_send_message_payload_rate_limit_retry_after_header () =
   reset_env ();
   Mock_http.next_post_responses :=

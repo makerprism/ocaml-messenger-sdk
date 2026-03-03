@@ -175,6 +175,8 @@ let test_send_message_media_type_unsupported () =
   if !(Mock_http.post_call_count) <> 0 then
     fail "send_message should not call HTTP for unsupported media URLs"
 
+(* Ported behavior intent: media validation and malformed/error payload handling
+   aligned with mature Telegram SDK suites (e.g. aiogram/node-telegram-bot-api). *)
 let test_send_message_multiple_media_urls_unsupported () =
   Mock_http.reset ();
   let message =
