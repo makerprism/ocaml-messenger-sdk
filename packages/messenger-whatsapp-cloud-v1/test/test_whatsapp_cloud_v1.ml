@@ -292,7 +292,58 @@ let test_send_message_api_error_payload_200 () =
           if code <> 400 then fail "expected Api_error code=400";
           if retriable then fail "expected non-retriable API error";
           if message <> "(#100) Invalid parameter" then fail "unexpected API error message"
-      | Error err -> fail ("expected Api_error, got " ^ Error_types.to_string err))
+       | Error err -> fail ("expected Api_error, got " ^ Error_types.to_string err))
+
+let test_send_message_rate_limited_retry_after_header () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 429
+        ; headers = [ ("Retry-After", "11") ]
+        ; body = "{\"error\":{\"message\":\"Rate limit\"}}"
+        }
+    ];
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message (Phone_number "15551234567"))
+    (function
+      | Ok _ -> fail "expected rate-limited error"
+      | Error (Error_types.Rate_limited { retry_after_seconds = Some 11; _ }) -> ()
+      | Error err -> fail ("expected Rate_limited with retry_after=11, got " ^ Error_types.to_string err))
+
+let test_send_message_success_missing_message_id () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{\"messages\":[{}]}"
+        }
+    ];
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message (Phone_number "15551234567"))
+    (function
+      | Ok _ -> fail "expected internal error for missing message id"
+      | Error (Error_types.Internal_error _) -> ()
+      | Error err -> fail ("expected Internal_error, got " ^ Error_types.to_string err))
+
+let test_send_message_invalid_json_success_body () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body = "{not-json"
+        }
+    ];
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message (Phone_number "15551234567"))
+    (function
+      | Ok _ -> fail "expected internal error for invalid JSON"
+      | Error (Error_types.Internal_error _) -> ()
+      | Error err -> fail ("expected Internal_error, got " ^ Error_types.to_string err))
 
 let test_validate_access_auth_error_payload_200 () =
   Mock_http.reset ();
@@ -323,6 +374,20 @@ let test_validate_access_forbidden_maps_unauthorized () =
     | Ok () -> fail "expected auth error"
     | Error (Error_types.Auth_error (Error_types.Unauthorized "Insufficient permission")) -> ()
     | Error err -> fail ("expected Unauthorized, got " ^ Error_types.to_string err))
+
+let test_validate_access_rate_limited_retry_after_header () =
+  Mock_http.reset ();
+  Mock_http.get_responses :=
+    [ Ok
+        { Http_client.status = 429
+        ; headers = [ ("Retry-After", "17") ]
+        ; body = "{\"error\":{\"message\":\"Rate limit\"}}"
+        }
+    ];
+  Connector.validate_access ~account_id:"acct" (function
+    | Ok () -> fail "expected rate-limited auth check"
+    | Error (Error_types.Rate_limited { retry_after_seconds = Some 17; _ }) -> ()
+    | Error err -> fail ("expected Rate_limited with retry_after=17, got " ^ Error_types.to_string err))
 
 let test_send_thread_partial_result () =
   Mock_http.reset ();
@@ -384,7 +449,11 @@ let () =
   test_validate_access_success ();
   test_validate_access_invalid_token ();
   test_send_message_api_error_payload_200 ();
+  test_send_message_rate_limited_retry_after_header ();
+  test_send_message_success_missing_message_id ();
+  test_send_message_invalid_json_success_body ();
   test_validate_access_auth_error_payload_200 ();
   test_validate_access_forbidden_maps_unauthorized ();
+  test_validate_access_rate_limited_retry_after_header ();
   test_send_thread_partial_result ();
   test_missing_token_error ()
