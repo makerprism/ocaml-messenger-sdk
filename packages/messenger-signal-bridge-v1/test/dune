@@ -1,0 +1,4 @@
+(test
+ (name test_signal_bridge_v1)
+ (modules test_signal_bridge_v1)
+ (libraries messenger-signal-bridge-v1 messenger-core))

@@ -24,6 +24,12 @@ See `packages/messenger-signal-bridge-v1/REFERENCE_IMPLEMENTATIONS.md` for trust
 - This package is intentionally named `signal-bridge` because it integrates with bridge-compatible APIs.
 - It does not claim to be an official first-party Signal cloud SDK.
 
+## MVP Connector Surface
+
+- `send_message`: text-only send over bridge-compatible HTTP (`media_urls` are rejected in this MVP).
+- `validate_access`: health/check probe using configured bridge endpoint and token.
+- `send_thread`: sequential message posting over `posts` with `thread_result` completion status.
+
 ## Reuse Policy
 
 - We use reference implementations for runtime behavior, bridge protocol semantics, and error handling expectations.
