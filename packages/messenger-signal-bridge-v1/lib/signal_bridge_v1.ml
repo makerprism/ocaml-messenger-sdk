@@ -70,37 +70,64 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
     in
     loop headers
 
+  let assoc_member key = function
+    | `Assoc fields -> List.assoc_opt key fields
+    | _ -> None
+
+  let list_first = function
+    | `List (value :: _) -> Some value
+    | _ -> None
+
   let json_string_or_int = function
     | `String s when String.trim s <> "" -> Some (String.trim s)
     | `Int i -> Some (string_of_int i)
     | _ -> None
 
+  let json_int = function
+    | `Int i -> Some i
+    | `String s ->
+        (try Some (int_of_string (String.trim s)) with _ -> None)
+    | _ -> None
+
   let parse_message_id body =
-    let assoc_member key = function
-      | `Assoc fields -> List.assoc_opt key fields
-      | _ -> None
-    in
-    let list_first = function
-      | `List (value :: _) -> Some value
-      | _ -> None
-    in
     let pick_first values =
       List.find_map (fun value -> Option.bind value json_string_or_int) values
     in
     try
       let json = Yojson.Basic.from_string body in
+      let top_result = assoc_member "result" json in
+      let top_data = assoc_member "data" json in
+      let top_messages = assoc_member "messages" json in
+      let result_messages = Option.bind top_result (assoc_member "messages") in
+      let data_messages = Option.bind top_data (assoc_member "messages") in
       let candidates =
         [ assoc_member "message_id" json
+        ; assoc_member "messageId" json
         ; assoc_member "id" json
         ; assoc_member "timestamp" json
-        ; Option.bind (assoc_member "result" json) (assoc_member "message_id")
-        ; Option.bind (assoc_member "result" json) (assoc_member "id")
-        ; Option.bind (assoc_member "result" json) (assoc_member "timestamp")
-        ; Option.bind (assoc_member "data" json) (assoc_member "id")
-        ; Option.bind (assoc_member "data" json) (assoc_member "timestamp")
-        ; Option.bind (Option.bind (assoc_member "messages" json) list_first) (assoc_member "id")
-        ; Option.bind (Option.bind (assoc_member "messages" json) list_first) (assoc_member "timestamp")
+        ; Option.bind top_result (assoc_member "message_id")
+        ; Option.bind top_result (assoc_member "messageId")
+        ; Option.bind top_result (assoc_member "id")
+        ; Option.bind top_result (assoc_member "timestamp")
+        ; Option.bind top_data (assoc_member "message_id")
+        ; Option.bind top_data (assoc_member "messageId")
+        ; Option.bind top_data (assoc_member "id")
+        ; Option.bind top_data (assoc_member "timestamp")
+        ; Option.bind (Option.bind top_messages list_first) (assoc_member "message_id")
+        ; Option.bind (Option.bind top_messages list_first) (assoc_member "messageId")
+        ; Option.bind (Option.bind top_messages list_first) (assoc_member "id")
+        ; Option.bind (Option.bind top_messages list_first) (assoc_member "timestamp")
+        ; Option.bind (Option.bind result_messages list_first) (assoc_member "message_id")
+        ; Option.bind (Option.bind result_messages list_first) (assoc_member "messageId")
+        ; Option.bind (Option.bind result_messages list_first) (assoc_member "id")
+        ; Option.bind (Option.bind result_messages list_first) (assoc_member "timestamp")
+        ; Option.bind (Option.bind data_messages list_first) (assoc_member "message_id")
+        ; Option.bind (Option.bind data_messages list_first) (assoc_member "messageId")
+        ; Option.bind (Option.bind data_messages list_first) (assoc_member "id")
+        ; Option.bind (Option.bind data_messages list_first) (assoc_member "timestamp")
         ; Option.bind (list_first json) (assoc_member "id")
+        ; Option.bind (list_first json) (assoc_member "message_id")
+        ; Option.bind (list_first json) (assoc_member "messageId")
         ; Option.bind (list_first json) (assoc_member "timestamp")
         ]
       in
@@ -109,17 +136,27 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
       None
 
   let parse_error_message body =
-    let open Yojson.Basic.Util in
     try
       let json = Yojson.Basic.from_string body in
+      let error = assoc_member "error" json in
+      let errors = assoc_member "errors" json in
       let candidates =
-        [ json |> member "message"
-        ; json |> member "error"
-        ; json |> member "detail"
-        ; json |> member "description"
+        [ assoc_member "message" json
+        ; assoc_member "detail" json
+        ; assoc_member "description" json
+        ; assoc_member "reason" json
+        ; error
+        ; Option.bind error (assoc_member "message")
+        ; Option.bind error (assoc_member "detail")
+        ; Option.bind error (assoc_member "description")
+        ; Option.bind error (assoc_member "reason")
+        ; Option.bind (Option.bind errors list_first) (assoc_member "message")
+        ; Option.bind (Option.bind errors list_first) (assoc_member "detail")
+        ; Option.bind (Option.bind errors list_first) (assoc_member "description")
+        ; Option.bind (Option.bind errors list_first) (assoc_member "reason")
         ]
       in
-      match List.find_map json_string_or_int candidates with
+      match List.find_map (fun value -> Option.bind value json_string_or_int) candidates with
       | Some message -> message
       | None ->
           let trimmed = String.trim body in
@@ -128,23 +165,126 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
       let trimmed = String.trim body in
       if trimmed = "" then "Signal bridge API error" else trimmed
 
-  let classify_http_error (response : Http_client.response) =
-    let message = parse_error_message response.Http_client.body in
-    match response.status with
+  type payload_error = {
+    code : int option;
+    message : string;
+    retry_after_seconds : int option;
+  }
+
+  let parse_payload_error body =
+    try
+      let json = Yojson.Basic.from_string body in
+      let error = assoc_member "error" json in
+      let errors = assoc_member "errors" json in
+      let code =
+        List.find_map (fun value -> Option.bind value json_int)
+          [ assoc_member "code" json
+          ; assoc_member "status_code" json
+          ; assoc_member "statusCode" json
+          ; Option.bind error (assoc_member "code")
+          ; Option.bind error (assoc_member "status_code")
+          ; Option.bind error (assoc_member "statusCode")
+          ]
+      in
+      let retry_after_seconds =
+        List.find_map (fun value -> Option.bind value json_int)
+          [ assoc_member "retry_after" json
+          ; assoc_member "retryAfter" json
+          ; assoc_member "retry-after" json
+          ; Option.bind error (assoc_member "retry_after")
+          ; Option.bind error (assoc_member "retryAfter")
+          ; Option.bind error (assoc_member "retry-after")
+          ; Option.bind (Option.bind errors list_first) (assoc_member "retry_after")
+          ; Option.bind (Option.bind errors list_first) (assoc_member "retryAfter")
+          ; Option.bind (Option.bind errors list_first) (assoc_member "retry-after")
+          ]
+      in
+      let has_error_flag =
+        match assoc_member "ok" json with
+        | Some (`Bool false) -> true
+        | _ ->
+            (match assoc_member "success" json with
+             | Some (`Bool false) -> true
+             | _ -> false)
+      in
+      let has_error_status =
+        match assoc_member "status" json with
+        | Some (`String status) ->
+            let lowered = String.lowercase_ascii (String.trim status) in
+            lowered = "error" || lowered = "failed" || lowered = "failure"
+        | _ -> false
+      in
+      let has_error_field =
+        match error with
+        | Some `Null
+        | None
+        | Some (`Bool false)
+        | Some (`String "") -> false
+        | Some (`String value) -> String.trim value <> ""
+        | Some (`Assoc fields) -> fields <> []
+        | Some (`List values) -> values <> []
+        | Some _ -> true
+      in
+      let has_errors_list =
+        match errors with
+        | Some (`List values) -> values <> []
+        | _ -> false
+      in
+      let has_error_code =
+        match code with
+        | Some value -> value >= 400
+        | None -> false
+      in
+      if has_error_flag || has_error_status || has_error_field || has_errors_list || has_error_code then
+        Some
+          { code
+          ; message = parse_error_message body
+          ; retry_after_seconds
+          }
+      else
+        None
+    with _ ->
+      None
+
+  let classify_error ~status ~headers ~body payload_error =
+    let code =
+      match payload_error with
+      | Some payload ->
+          (match payload.code with
+           | Some value -> value
+           | None -> status)
+      | None -> status
+    in
+    let message =
+      match payload_error with
+      | Some payload -> payload.message
+      | None -> parse_error_message body
+    in
+    let retry_after_seconds =
+      let header_value = parse_int_header headers "retry-after" in
+      match payload_error with
+      | Some payload ->
+          (match payload.retry_after_seconds with
+           | Some _ as value -> value
+           | None -> header_value)
+      | None -> header_value
+    in
+    match code with
     | 401 -> Error_types.Auth_error Invalid_token
     | 403 -> Error_types.Auth_error (Unauthorized message)
     | 429 ->
-        let retry_after_seconds =
-          parse_int_header response.headers "retry-after"
-        in
         Error_types.Rate_limited
           { retry_after_seconds; limit = None; remaining = None }
-    | status ->
+    | _ ->
         Error_types.Api_error
-          { code = status
+          { code
           ; message
-          ; retriable = status >= 500
+          ; retriable = code >= 500 || status >= 500
           }
+
+  let classify_http_error (response : Http_client.response) =
+    classify_error ~status:response.status ~headers:response.headers
+      ~body:response.body (parse_payload_error response.body)
 
   let is_success_status status = status >= 200 && status < 300
 
@@ -174,19 +314,27 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
                       ; ("Content-Type", "application/json")
                       ]
                     ~body:(Yojson.Basic.to_string payload)
-                    (endpoint_url ~base:endpoint send_path)
-                    (fun response ->
-                       if is_success_status response.status then
-                         (match parse_message_id response.body with
-                          | Some message_id -> on_result (Ok message_id)
-                          | None ->
-                              on_result
-                                (Error
-                                   Error_types.
-                                     (Internal_error
-                                        "signal bridge send response missing message identifier")))
-                       else
-                         on_result (Error (classify_http_error response)))
+                     (endpoint_url ~base:endpoint send_path)
+                     (fun response ->
+                        if is_success_status response.status then
+                          (match parse_payload_error response.body with
+                           | Some payload_error ->
+                               on_result
+                                 (Error
+                                    (classify_error ~status:response.status
+                                       ~headers:response.headers ~body:response.body
+                                       (Some payload_error)))
+                           | None ->
+                               (match parse_message_id response.body with
+                                | Some message_id -> on_result (Ok message_id)
+                                | None ->
+                                    on_result
+                                      (Error
+                                         Error_types.
+                                           (Internal_error
+                                              "signal bridge send response missing message identifier"))))
+                        else
+                          on_result (Error (classify_http_error response)))
                     (fun message ->
                        on_result
                          (Error
@@ -226,11 +374,18 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
               Config.Http.get
                 ~headers:[ ("Authorization", "Bearer " ^ token) ]
                 (endpoint_url ~base:endpoint health_path)
-                (fun response ->
-                   if is_success_status response.status then
-                     on_result (Ok ())
-                   else
-                     on_result (Error (classify_http_error response)))
+                 (fun response ->
+                    if is_success_status response.status then
+                      (match parse_payload_error response.body with
+                       | None -> on_result (Ok ())
+                       | Some payload_error ->
+                           on_result
+                             (Error
+                                (classify_error ~status:response.status
+                                   ~headers:response.headers ~body:response.body
+                                   (Some payload_error))))
+                    else
+                      on_result (Error (classify_http_error response)))
                 (fun message ->
                    on_result
                      (Error
