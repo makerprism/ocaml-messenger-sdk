@@ -118,6 +118,40 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
   let append_caption_if_non_empty fields text =
     if String.trim text = "" then fields else fields @ [ ("caption", `String text) ]
 
+  let metadata_value key metadata =
+    metadata
+    |> List.find_map (fun (k, v) -> if String.lowercase_ascii k = key then Some (String.trim v) else None)
+
+  let metadata_int key metadata =
+    match metadata_value key metadata with
+    | Some value when value <> "" ->
+        (try Some (int_of_string value) with _ -> None)
+    | _ -> None
+
+  let metadata_bool key metadata =
+    match metadata_value key metadata with
+    | Some value ->
+        (match String.lowercase_ascii value with
+         | "true" | "1" | "yes" -> Some true
+         | "false" | "0" | "no" -> Some false
+         | _ -> None)
+    | None -> None
+
+  let append_common_metadata fields metadata =
+    let with_thread =
+      match metadata_int "message_thread_id" metadata with
+      | Some value -> fields @ [ ("message_thread_id", `Int value) ]
+      | None -> fields
+    in
+    let with_parse_mode =
+      match metadata_value "parse_mode" metadata with
+      | Some value when value <> "" -> with_thread @ [ ("parse_mode", `String value) ]
+      | _ -> with_thread
+    in
+    match metadata_bool "disable_web_page_preview" metadata with
+    | Some value -> with_parse_mode @ [ ("disable_web_page_preview", `Bool value) ]
+    | None -> with_parse_mode
+
   let post_message_request ~token ~method_name ~payload on_result =
     Config.Http.post
       ~headers:[ ("Content-Type", "application/json") ]
@@ -159,31 +193,37 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
     | Ok () ->
         let chat_id = recipient_to_chat_id message.Platform_types.recipient in
         let request =
-          match message.Platform_types.media_urls with
-          | [] ->
-              Ok
-                ( "sendMessage"
-                , `Assoc
-                    [ ("chat_id", `String chat_id)
-                    ; ("text", `String message.text)
-                    ] )
-          | [ media_url ] ->
-              (match media_kind_of_url media_url with
-               | Some Photo ->
-                   Ok
-                     ( "sendPhoto"
-                     , `Assoc
-                         (append_caption_if_non_empty
-                            [ ("chat_id", `String chat_id); ("photo", `String media_url) ]
-                            message.text) )
-               | Some Video ->
-                   Ok
-                     ( "sendVideo"
-                     , `Assoc
-                         (append_caption_if_non_empty
-                            [ ("chat_id", `String chat_id); ("video", `String media_url) ]
-                            message.text) )
-               | None ->
+           match message.Platform_types.media_urls with
+           | [] ->
+               Ok
+                 ( "sendMessage"
+                 , `Assoc
+                    (append_common_metadata
+                       [ ("chat_id", `String chat_id)
+                       ; ("text", `String message.text)
+                       ]
+                       message.metadata) )
+           | [ media_url ] ->
+               (match media_kind_of_url media_url with
+                | Some Photo ->
+                    Ok
+                      ( "sendPhoto"
+                      , `Assoc
+                         (append_common_metadata
+                            (append_caption_if_non_empty
+                               [ ("chat_id", `String chat_id); ("photo", `String media_url) ]
+                               message.text)
+                            message.metadata) )
+                | Some Video ->
+                    Ok
+                      ( "sendVideo"
+                      , `Assoc
+                         (append_common_metadata
+                            (append_caption_if_non_empty
+                               [ ("chat_id", `String chat_id); ("video", `String media_url) ]
+                               message.text)
+                            message.metadata) )
+                | None ->
                    Error
                      (validation_error "media_urls"
                         "only image and video URLs are supported in telegram-bot-v1 MVP"))

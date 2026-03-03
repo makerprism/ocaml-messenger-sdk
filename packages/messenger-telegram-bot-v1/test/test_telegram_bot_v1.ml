@@ -81,6 +81,18 @@ let expect_field_string ~field ~expected json =
   if actual <> expected then
     fail (Printf.sprintf "expected %s=%s, got %s" field expected actual)
 
+let expect_field_int ~field ~expected json =
+  let open Yojson.Basic.Util in
+  let actual = json |> member field |> to_int in
+  if actual <> expected then
+    fail (Printf.sprintf "expected %s=%d, got %d" field expected actual)
+
+let expect_field_bool ~field ~expected json =
+  let open Yojson.Basic.Util in
+  let actual = json |> member field |> to_bool in
+  if actual <> expected then
+    fail (Printf.sprintf "expected %s=%b, got %b" field expected actual)
+
 let test_send_message_success () =
   Mock_http.reset ();
   let message =
@@ -142,6 +154,26 @@ let test_send_message_video_success_without_caption () =
   expect_field_string ~field:"video" ~expected:video_url payload;
   if payload |> member "caption" <> `Null then
     fail "expected caption to be omitted when text is empty"
+
+let test_send_message_supports_thread_and_parse_metadata () =
+  Mock_http.reset ();
+  let message =
+    { Platform_types.recipient = Channel_id "-100123"
+    ; text = "**hello**"
+    ; media_urls = []
+    ; metadata = [ ("message_thread_id", "77"); ("parse_mode", "MarkdownV2"); ("disable_web_page_preview", "true") ]
+    }
+  in
+  Connector.send_message ~account_id:"acct" message (function
+    | Ok "42" -> ()
+    | Ok value -> fail ("expected message id 42, got " ^ value)
+    | Error err -> fail ("expected success, got " ^ Error_types.to_string err));
+  let payload = sent_payload () in
+  expect_field_string ~field:"chat_id" ~expected:"-100123" payload;
+  expect_field_string ~field:"text" ~expected:"**hello**" payload;
+  expect_field_int ~field:"message_thread_id" ~expected:77 payload;
+  expect_field_string ~field:"parse_mode" ~expected:"MarkdownV2" payload;
+  expect_field_bool ~field:"disable_web_page_preview" ~expected:true payload
 
 let test_send_message_validation_error () =
   Mock_http.reset ();
@@ -354,6 +386,7 @@ let () =
   test_send_message_success ();
   test_send_message_photo_success ();
   test_send_message_video_success_without_caption ();
+  test_send_message_supports_thread_and_parse_metadata ();
   test_send_message_validation_error ();
   test_send_message_media_type_unsupported ();
   test_send_message_multiple_media_urls_unsupported ();
