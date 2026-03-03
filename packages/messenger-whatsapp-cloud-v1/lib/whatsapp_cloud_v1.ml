@@ -41,24 +41,72 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
     in
     find headers
 
+  let parse_json body =
+    try Some (Yojson.Basic.from_string body) with _ -> None
+
+  let int_of_json = function
+    | `Int value -> Some value
+    | `String value ->
+        (try Some (int_of_string (String.trim value)) with _ -> None)
+    | _ -> None
+
+  let has_api_error_payload body =
+    match parse_json body with
+    | Some json ->
+        (match Yojson.Basic.Util.(json |> member "error") with
+         | `Assoc _ -> true
+         | _ -> false)
+    | None -> false
+
   let parse_api_error status headers body =
     let default_message = "WhatsApp Cloud API error" in
+    let json_opt = parse_json body in
     let message =
-      try
-        let json = Yojson.Basic.from_string body in
-        let open Yojson.Basic.Util in
-        json |> member "error" |> member "message" |> to_string
-      with _ -> default_message
+      match json_opt with
+      | Some json ->
+          (try
+             let open Yojson.Basic.Util in
+             json |> member "error" |> member "message" |> to_string
+           with _ -> default_message)
+      | None -> default_message
     in
-    if status = 401 then
-      Error_types.Auth_error Invalid_token
-    else if status = 403 then
-      Error_types.Auth_error (Unauthorized message)
-    else if status = 429 then
+    let error_code_opt =
+      match json_opt with
+      | Some json ->
+          (try
+             let open Yojson.Basic.Util in
+             json |> member "error" |> member "code" |> int_of_json
+           with _ -> None)
+      | None -> None
+    in
+    let payload_retry_after =
+      match json_opt with
+      | Some json ->
+          (try
+             let open Yojson.Basic.Util in
+             json |> member "error" |> member "error_data" |> member "retry_after" |> int_of_json
+           with _ -> None)
+      | None -> None
+    in
+    let retry_after_seconds =
+      match parse_retry_after headers with
+      | Some _ as value -> value
+      | None -> payload_retry_after
+    in
+    let error_code =
+      match error_code_opt with
+      | Some value when status >= 200 && status < 300 -> value
+      | _ -> status
+    in
+    if status = 429 || error_code_opt = Some 429 then
       Error_types.Rate_limited
-        { retry_after_seconds = parse_retry_after headers; limit = None; remaining = Some 0 }
+        { retry_after_seconds; limit = None; remaining = Some 0 }
+    else if status = 401 || error_code_opt = Some 401 then
+      Error_types.Auth_error Invalid_token
+    else if status = 403 || error_code_opt = Some 403 then
+      Error_types.Auth_error (Unauthorized message)
     else
-      Error_types.Api_error { code = status; message; retriable = status >= 500 }
+      Error_types.Api_error { code = error_code; message; retriable = error_code >= 500 }
 
   let parse_message_id body =
     try
@@ -102,13 +150,18 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
               (messages_url ~account_id)
               (fun response ->
                 if response.status >= 200 && response.status < 300 then
-                  (match parse_message_id response.body with
-                   | Some message_id -> on_result (Ok message_id)
-                   | None ->
-                       on_result
-                         (Error
-                            (Error_types.Internal_error
-                               "WhatsApp Cloud API response missing messages[0].id")))
+                  if has_api_error_payload response.body then
+                    on_result
+                      (Error
+                         (parse_api_error response.status response.headers response.body))
+                  else
+                    (match parse_message_id response.body with
+                     | Some message_id -> on_result (Ok message_id)
+                     | None ->
+                         on_result
+                           (Error
+                              (Error_types.Internal_error
+                                 "WhatsApp Cloud API response missing messages[0].id")))
                 else
                   on_result
                     (Error
@@ -149,7 +202,12 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
           (validate_url ~account_id)
           (fun response ->
             if response.status >= 200 && response.status < 300 then
-              on_result (Ok ())
+              if has_api_error_payload response.body then
+                on_result
+                  (Error
+                     (parse_api_error response.status response.headers response.body))
+              else
+                on_result (Ok ())
             else
               on_result
                 (Error (parse_api_error response.status response.headers response.body)))

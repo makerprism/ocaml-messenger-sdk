@@ -154,6 +154,57 @@ let test_validate_access_invalid_token () =
     | Error (Error_types.Auth_error Error_types.Invalid_token) -> ()
     | Error err -> fail ("expected Invalid_token, got " ^ Error_types.to_string err))
 
+let test_send_message_api_error_payload_200 () =
+  Mock_http.reset ();
+  Mock_http.post_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body =
+            "{\"error\":{\"message\":\"(#100) Invalid parameter\",\"type\":\"OAuthException\",\"code\":400}}"
+        }
+    ];
+  Connector.send_message
+    ~account_id:"acct"
+    (sample_message (Phone_number "15551234567"))
+    (function
+      | Ok _ -> fail "expected API error"
+      | Error (Error_types.Api_error { code; message; retriable }) ->
+          if code <> 400 then fail "expected Api_error code=400";
+          if retriable then fail "expected non-retriable API error";
+          if message <> "(#100) Invalid parameter" then fail "unexpected API error message"
+      | Error err -> fail ("expected Api_error, got " ^ Error_types.to_string err))
+
+let test_validate_access_auth_error_payload_200 () =
+  Mock_http.reset ();
+  Mock_http.get_responses :=
+    [ Ok
+        { Http_client.status = 200
+        ; headers = []
+        ; body =
+            "{\"error\":{\"message\":\"Invalid OAuth access token\",\"type\":\"OAuthException\",\"code\":401}}"
+        }
+    ];
+  Connector.validate_access ~account_id:"acct" (function
+    | Ok () -> fail "expected auth error"
+    | Error (Error_types.Auth_error Error_types.Invalid_token) -> ()
+    | Error err -> fail ("expected Invalid_token, got " ^ Error_types.to_string err))
+
+let test_validate_access_forbidden_maps_unauthorized () =
+  Mock_http.reset ();
+  Mock_http.get_responses :=
+    [ Ok
+        { Http_client.status = 403
+        ; headers = []
+        ; body =
+            "{\"error\":{\"message\":\"Insufficient permission\",\"type\":\"OAuthException\",\"code\":403}}"
+        }
+    ];
+  Connector.validate_access ~account_id:"acct" (function
+    | Ok () -> fail "expected auth error"
+    | Error (Error_types.Auth_error (Error_types.Unauthorized "Insufficient permission")) -> ()
+    | Error err -> fail ("expected Unauthorized, got " ^ Error_types.to_string err))
+
 let test_send_thread_partial_result () =
   Mock_http.reset ();
   Mock_http.post_responses :=
@@ -163,10 +214,11 @@ let test_send_thread_partial_result () =
         ; body = "{\"messages\":[{\"id\":\"wamid.first\"}]}"
         }
     ; Ok
-        { Http_client.status = 500
-        ; headers = []
-        ; body = "{\"error\":{\"message\":\"server error\"}}"
-        }
+        { Http_client.status = 200
+         ; headers = []
+         ; body =
+             "{\"error\":{\"message\":\"(#100) Invalid parameter\",\"type\":\"OAuthException\",\"code\":400}}"
+         }
     ; Ok
         { Http_client.status = 200
         ; headers = []
@@ -208,5 +260,8 @@ let () =
   test_send_message_media_unsupported ();
   test_validate_access_success ();
   test_validate_access_invalid_token ();
+  test_send_message_api_error_payload_200 ();
+  test_validate_access_auth_error_payload_200 ();
+  test_validate_access_forbidden_maps_unauthorized ();
   test_send_thread_partial_result ();
   test_missing_token_error ()
