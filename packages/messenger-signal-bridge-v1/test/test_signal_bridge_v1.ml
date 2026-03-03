@@ -6,6 +6,7 @@ module Mock_http = struct
   type request_record = {
     url : string;
     headers : (string * string) list;
+    body : string option;
   }
 
   let requests : request_record list ref = ref []
@@ -23,7 +24,11 @@ module Mock_http = struct
 
   let record_request ~url ?headers () =
     let normalized_headers = match headers with Some value -> value | None -> [] in
-    requests := { url; headers = normalized_headers } :: !requests
+    requests := { url; headers = normalized_headers; body = None } :: !requests
+
+  let record_post_request ~url ?headers ?body () =
+    let normalized_headers = match headers with Some value -> value | None -> [] in
+    requests := { url; headers = normalized_headers; body } :: !requests
 
   let dispatch result on_success on_error =
     match result with
@@ -49,8 +54,8 @@ module Mock_http = struct
     record_request ~url ?headers ();
     dispatch !next_get_response on_success on_error
 
-  and post ?headers ?body:_ url on_success on_error =
-    record_request ~url ?headers ();
+  and post ?headers ?body url on_success on_error =
+    record_post_request ~url ?headers ?body ();
     dispatch (pop_post_response ()) on_success on_error
 
   and post_multipart ?headers:_ ~parts:_ _url _on_success on_error =
@@ -153,8 +158,66 @@ let test_send_message_header_propagation () =
        | None -> fail "missing authorization header");
       (match find_header "Content-Type" request.headers with
        | Some "application/json" -> ()
-       | Some other -> fail ("unexpected content-type header: " ^ other)
-       | None -> fail "missing content-type header")
+        | Some other -> fail ("unexpected content-type header: " ^ other)
+        | None -> fail "missing content-type header")
+
+let test_send_message_group_routing_from_metadata () =
+  reset_env ();
+  Mock_http.next_post_responses :=
+    [ Ok { Http_client.status = 201; headers = []; body = "{\"id\":\"msg-group\"}" } ];
+  let message =
+    { Platform_types.recipient = Phone_number "+12025550199"
+    ; text = "hello group"
+    ; media_urls = []
+    ; metadata = [ ("group_id", "group-123") ]
+    }
+  in
+  Connector.send_message ~account_id:"+12025550000" message (function
+    | Ok "msg-group" -> ()
+    | Ok value -> fail ("expected message id msg-group, got " ^ value)
+    | Error err -> fail ("expected send success, got " ^ Error_types.to_string err));
+  match !Mock_http.requests with
+  | [] -> fail "expected one HTTP request"
+  | request :: _ ->
+      (match request.body with
+       | None -> fail "expected request body"
+       | Some body ->
+           let json = Yojson.Basic.from_string body in
+           let open Yojson.Basic.Util in
+           if json |> member "groupIds" |> to_list |> List.length <> 1 then
+             fail "expected one group id";
+           if json |> member "groupIds" |> index 0 |> to_string <> "group-123" then
+             fail "expected group id group-123";
+           if json |> member "recipients" <> `Null then
+             fail "expected recipients to be omitted for group sends")
+
+let test_send_message_signal_uuid_normalization () =
+  reset_env ();
+  Mock_http.next_post_responses :=
+    [ Ok { Http_client.status = 201; headers = []; body = "{\"id\":\"msg-uuid\"}" } ];
+  let message =
+    { Platform_types.recipient = User_id "signal:uuid:ABCDEF01-2345-6789-abcd-ef0123456789"
+    ; text = "hello"
+    ; media_urls = []
+    ; metadata = []
+    }
+  in
+  Connector.send_message ~account_id:"+12025550000" message (function
+    | Ok "msg-uuid" -> ()
+    | Ok value -> fail ("expected message id msg-uuid, got " ^ value)
+    | Error err -> fail ("expected send success, got " ^ Error_types.to_string err));
+  match !Mock_http.requests with
+  | [] -> fail "expected one HTTP request"
+  | request :: _ ->
+      (match request.body with
+       | None -> fail "expected request body"
+       | Some body ->
+           let json = Yojson.Basic.from_string body in
+           let open Yojson.Basic.Util in
+           if json |> member "recipients" |> index 0 |> to_string
+              <> "abcdef01-2345-6789-abcd-ef0123456789"
+           then
+             fail "expected normalized lowercase uuid recipient")
 
 let test_send_message_rejects_media_urls () =
   reset_env ();
@@ -418,6 +481,8 @@ let () =
   test_send_message_success ();
   test_send_message_trims_endpoint_trailing_slashes ();
   test_send_message_header_propagation ();
+  test_send_message_group_routing_from_metadata ();
+  test_send_message_signal_uuid_normalization ();
   test_send_message_rejects_media_urls ();
   test_validate_access_success ();
   test_validate_access_trims_endpoint_trailing_slashes ();

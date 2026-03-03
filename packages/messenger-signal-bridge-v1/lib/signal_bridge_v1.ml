@@ -55,6 +55,43 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
     | Platform_types.Phone_number v
     | Platform_types.Channel_id v -> v
 
+  type destination =
+    | Direct of string
+    | Group of string
+
+  let starts_with ~prefix value =
+    let plen = String.length prefix in
+    String.length value >= plen && String.sub value 0 plen = prefix
+
+  let normalize_target value =
+    let trimmed = String.trim value in
+    let lowered = String.lowercase_ascii trimmed in
+    if starts_with ~prefix:"signal:uuid:" lowered then
+      String.sub
+        lowered
+        (String.length "signal:uuid:")
+        (String.length lowered - String.length "signal:uuid:")
+    else
+      trimmed
+
+  let destination_of_message message =
+    let metadata_group =
+      message.Platform_types.metadata
+      |> List.find_map (fun (key, value) ->
+             if String.lowercase_ascii key = "group_id" then Some (String.trim value)
+             else None)
+    in
+    match metadata_group with
+    | Some group_id when group_id <> "" -> Group group_id
+    | _ ->
+        let target = normalize_target (recipient_string message.Platform_types.recipient) in
+        let lowered = String.lowercase_ascii target in
+        if starts_with ~prefix:"group:" lowered then
+          let group_id = String.sub target (String.length "group:") (String.length target - String.length "group:") in
+          Group group_id
+        else
+          Direct target
+
   let validation_error field message =
     Error_types.Validation_error [ { Error_types.field; message } ]
 
@@ -301,12 +338,17 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
           (fun endpoint ->
              with_token ~account_id
                (fun token ->
+                  let destination_fields =
+                    match destination_of_message message with
+                    | Group group_id -> [ ("groupIds", `List [ `String group_id ]) ]
+                    | Direct target -> [ ("recipients", `List [ `String target ]) ]
+                  in
                   let payload =
                     `Assoc
-                      [ ("number", `String account_id)
-                      ; ("recipients", `List [ `String (recipient_string message.recipient) ])
-                      ; ("message", `String message.text)
-                      ]
+                      ([ ("number", `String account_id)
+                       ; ("message", `String message.text)
+                       ]
+                      @ destination_fields)
                   in
                   Config.Http.post
                     ~headers:
@@ -314,34 +356,34 @@ module Make (Config : CONFIG) : Connector_intf.S = struct
                       ; ("Content-Type", "application/json")
                       ]
                     ~body:(Yojson.Basic.to_string payload)
-                     (endpoint_url ~base:endpoint send_path)
-                     (fun response ->
-                        if is_success_status response.status then
-                          (match parse_payload_error response.body with
-                           | Some payload_error ->
-                               on_result
-                                 (Error
-                                    (classify_error ~status:response.status
-                                       ~headers:response.headers ~body:response.body
-                                       (Some payload_error)))
-                           | None ->
-                               (match parse_message_id response.body with
-                                | Some message_id -> on_result (Ok message_id)
-                                | None ->
-                                    on_result
-                                      (Error
-                                         Error_types.
-                                           (Internal_error
-                                              "signal bridge send response missing message identifier"))))
-                        else
-                          on_result (Error (classify_http_error response)))
-                    (fun message ->
+                    (endpoint_url ~base:endpoint send_path)
+                    (fun response ->
+                       if is_success_status response.status then
+                         (match parse_payload_error response.body with
+                          | Some payload_error ->
+                              on_result
+                                (Error
+                                   (classify_error ~status:response.status
+                                      ~headers:response.headers ~body:response.body
+                                      (Some payload_error)))
+                          | None ->
+                              (match parse_message_id response.body with
+                               | Some message_id -> on_result (Ok message_id)
+                               | None ->
+                                   on_result
+                                     (Error
+                                        Error_types.
+                                          (Internal_error
+                                             "signal bridge send response missing message identifier"))))
+                       else
+                         on_result (Error (classify_http_error response)))
+                    (fun err_msg ->
                        on_result
                          (Error
                             Error_types.
-                              (Network_error (Connection_failed message)))))
+                              (Network_error (Connection_failed err_msg)))))
                (fun err -> on_result (Error err)))
-          (fun err -> on_result (Error err))
+           (fun err -> on_result (Error err))
 
   let send_thread ~account_id thread on_result =
     let total_requested = List.length thread.Platform_types.posts in
