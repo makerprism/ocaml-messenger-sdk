@@ -1,2 +1,2 @@
 include Lwt_adapter
-module Cohttp_client = Cohttp_client
+module Http_client_stub = Http_client_stub

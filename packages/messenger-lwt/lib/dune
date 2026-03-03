@@ -2,4 +2,4 @@
  (name messenger_lwt)
  (public_name messenger-lwt)
  (libraries messenger_core lwt)
- (modules lwt_adapter cohttp_client messenger_lwt))
+ (modules lwt_adapter http_client_stub messenger_lwt))
