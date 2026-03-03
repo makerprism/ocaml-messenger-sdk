@@ -7,6 +7,9 @@ module type S = sig
     ((Platform_types.message_id, Error_types.error) result -> unit) ->
     unit
 
+  (** Sends posts sequentially.
+      Returns [Ok thread_result] even when a later post fails; in that case
+      [failed_at_index] is [Some idx] and [posted_ids] contains successful sends before idx. *)
   val send_thread :
     account_id:string ->
     Platform_types.thread_request ->
