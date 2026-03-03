@@ -52,9 +52,7 @@
  (depends
   (ocaml (>= 4.14))
   (messenger-core (= :version))
-  yojson
-  uri
-  str))
+  yojson))
 
 (package
  (name messenger-signal-bridge-v1)

@@ -4,6 +4,7 @@ let () =
     {
       recipient = Platform_types.User_id "user-1";
       text = "hello";
+      media_urls = [];
       metadata = [];
     }
   in

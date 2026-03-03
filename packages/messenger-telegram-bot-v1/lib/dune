@@ -1,4 +1,5 @@
 (library
  (name messenger_telegram_bot_v1)
  (public_name messenger-telegram-bot-v1)
+ (libraries messenger_core yojson)
  (modules telegram_bot_v1 messenger_telegram_bot_v1))

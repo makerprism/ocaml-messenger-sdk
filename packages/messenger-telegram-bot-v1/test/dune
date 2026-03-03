@@ -1,0 +1,4 @@
+(test
+ (name test_telegram_bot_v1)
+ (modules test_telegram_bot_v1)
+ (libraries messenger-telegram-bot-v1 messenger-core))
