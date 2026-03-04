@@ -1,0 +1,3 @@
+(executables
+ (names send_text_direct send_text_group normalize_signal_uuid validate_access)
+ (libraries messenger-signal-bridge-v1 messenger-core))
