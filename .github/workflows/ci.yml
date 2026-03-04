@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build and test
+
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - self-hosted
+          - macos-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        run: sudo apt update && sudo apt-get install -y libev-dev libgmp-dev libssl-dev pkg-config
+        if: runner.os == 'Linux'
+
+      - name: Install system dependencies (macOS)
+        run: brew install libev gmp openssl@3 pkg-config
+        if: runner.os == 'macOS'
+
+      - name: Setup Dune
+        uses: ocaml-dune/setup-dune@v1
+        with:
+          version: latest
+
+      - name: Lock dependencies
+        run: dune pkg lock
+
+      - name: Build project
+        run: dune build
+
+      - name: Run tests
+        run: dune runtest
+
+      - name: Verify package metadata in isolation
+        run: |
+          for pkg in \
+            messenger-whatsapp-cloud-v1 \
+            messenger-telegram-bot-v1 \
+            messenger-signal-bridge-v1
+          do
+            echo "Checking $pkg"
+            dune pkg lock --only-packages="$pkg"
+            dune build --only-packages="$pkg" @pkg-install
+          done

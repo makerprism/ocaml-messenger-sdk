@@ -1,0 +1,19 @@
+name: Review Agent Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review-agent:
+    uses: makerprism/code-review-workflow/.github/workflows/review-agent.yml@v1
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      issues: write
+      packages: read
+    secrets: inherit
+    with:
+      code_review_path: CODE_REVIEW.md
+      workflow_ref: v1
