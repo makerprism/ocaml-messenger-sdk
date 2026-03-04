@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - self-hosted
+          - ubicloud-standard-2
           - macos-latest
 
     steps:
