@@ -1,0 +1,3 @@
+(executables
+ (names send_text send_media_url reply_with_context validate_access)
+ (libraries messenger-whatsapp-cloud-v1 messenger-core))

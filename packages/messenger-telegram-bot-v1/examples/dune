@@ -1,0 +1,3 @@
+(executables
+ (names basic_send_text send_media_url send_with_metadata validate_access)
+ (libraries messenger-telegram-bot-v1 messenger-core))
