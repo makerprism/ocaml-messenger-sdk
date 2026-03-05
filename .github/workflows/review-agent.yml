@@ -7,7 +7,7 @@ on:
 jobs:
   review-agent:
     if: github.event.pull_request.head.repo.fork == false
-    uses: makerprism/code-review-workflow/.github/workflows/review-agent.yml@v1
+    uses: makerprism/code-review-workflow/.github/workflows/review-agent.yml@v1.2
     permissions:
       contents: read
       checks: write
