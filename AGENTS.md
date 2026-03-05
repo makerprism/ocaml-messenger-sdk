@@ -20,6 +20,7 @@ dune build
 - If dependencies changed, or Dune reports stale lock data, run `dune pkg lock`.
 - Do not manually edit files under `dune.lock/`.
 - Regenerate lock data only via `dune pkg lock`.
+- **Never use `--only-packages` flag** with `dune pkg lock`. It causes package resolution failures in CI.
 
 ## Dependency Policy
 
