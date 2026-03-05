@@ -53,6 +53,6 @@ jobs:
             messenger-signal-bridge-v1
           do
             echo "Checking $pkg"
-            dune pkg lock --only-packages="$pkg"
-            dune build --only-packages="$pkg" @pkg-install
+            dune pkg lock --only-packages="messenger-core,$pkg"
+            dune build --only-packages="messenger-core,$pkg" @pkg-install
           done
